@@ -103,6 +103,8 @@ class Solution:
         tiempo_total: float = FLOAT_ZERO,
         hablar: bool = True,
         voz: Optional[str] = None,
+        k_particiones: int = 2,
+        resultados_por_k: dict | None = None,
     ) -> None:
         """
         Inicializa una nueva instancia de Solution.
@@ -114,6 +116,8 @@ class Solution:
         self.distribucion_particion = distribucion_particion
         self.particion = particion
         self.tiempo_ejecucion = tiempo_total
+        self.k_particiones = k_particiones
+        self.resultados_por_k = resultados_por_k or {}
         self.id_voz = voz
         self.hablar = hablar
 
@@ -268,7 +272,7 @@ class Solution:
 {Fore.YELLOW}Distribucion {tipo_distribucion} de la Partición:
 {Style.RESET_ALL}{formatear_distribucion(self.distribucion_particion)}
 
-{Fore.YELLOW}Mejor Bi-Partición:
+{Fore.YELLOW}Mejor Partición (k={self.k_particiones}):
 {Fore.MAGENTA}{self.particion}
 {Fore.GREEN}Perdida mínima ( φ ) = {self.perdida:.4f}
 
@@ -287,3 +291,4 @@ class Solution:
                 La misma representación que __str__ para consistencia.
         """
         return self.__str__()
+
