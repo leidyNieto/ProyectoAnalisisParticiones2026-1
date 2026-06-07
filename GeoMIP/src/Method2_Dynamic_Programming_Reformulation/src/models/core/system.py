@@ -245,6 +245,47 @@ class System:
         )
         return new_sys
 
+    def particionar_k(
+        self,
+        partes_purview: list[NDArray[np.int8]],
+        partes_mecanismo: list[NDArray[np.int8]],
+    ) -> "System":
+        """
+        Generaliza ``bipartir`` a k partes. Cada cubo futuro pertenece al purview
+        de una parte j; se marginalizan los mecanismos asignados a las demás partes.
+        """
+        new_sys = System.__new__(System)
+        new_sys.estado_inicial = self.estado_inicial
+
+        purview_map: dict[int, int] = {}
+        for j, purview in enumerate(partes_purview):
+            for idx in purview:
+                purview_map[int(idx)] = j
+
+        mecanismos_otros: list[NDArray[np.int8]] = []
+        for j in range(len(partes_mecanismo)):
+            otros = [
+                partes_mecanismo[l]
+                for l in range(len(partes_mecanismo))
+                if l != j and partes_mecanismo[l].size
+            ]
+            if otros:
+                mecanismos_otros.append(np.concatenate(otros).astype(np.int8))
+            else:
+                mecanismos_otros.append(np.array([], dtype=np.int8))
+
+        new_cubes = []
+        for cube in self.ncubos:
+            parte = purview_map.get(cube.indice)
+            if parte is None:
+                ejes = np.concatenate(partes_mecanismo).astype(np.int8)
+            else:
+                ejes = mecanismos_otros[parte]
+            new_cubes.append(cube.marginalizar(ejes))
+
+        new_sys.ncubos = tuple(new_cubes)
+        return new_sys
+
     def distribucion_marginal(self):
         """
         Partiendo de idealmente un subsistema o una bipartición como entrada, se seleccionana los nodos/elementos cuando su estado es OFF o inactivo para cada uno de ellos, mediante la propiedad de las distribuciones marginales, esto nos permite calcular más eficientemente la EMD-Effect, logrando así determinar un coste para dar comparación entre idealmente, un sub-sistema y una bipartición. Hemos de aplicar una reversión en la selección del estado inicial puesto

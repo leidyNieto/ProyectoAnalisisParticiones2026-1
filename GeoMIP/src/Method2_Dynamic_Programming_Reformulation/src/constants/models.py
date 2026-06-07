@@ -21,3 +21,9 @@ PYPHI_ANALYSIS_TAG: str = f"{PYPHI_LABEL}_analysis"
 GEOMETRIC_LABEL: str = "Geometric"
 GEOMETRIC_STRAREGY_TAG: str = f"{GEOMETRIC_LABEL}_strategy"
 GEOMETRIC_ANALYSIS_TAG: str = f"{GEOMETRIC_LABEL}_analysis"
+
+
+# K-Partition (búsqueda exhaustiva k=2..5)
+KPARTITION_LABEL: str = "KPartition"
+KPARTITION_STRATEGY_TAG: str = f"{KPARTITION_LABEL}_strategy"
+KPARTITION_ANALYSIS_TAG: str = f"{KPARTITION_LABEL}_analysis"

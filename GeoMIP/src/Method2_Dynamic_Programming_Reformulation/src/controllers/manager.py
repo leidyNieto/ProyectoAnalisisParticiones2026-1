@@ -79,102 +79,102 @@ class Manager:
             f"{RESOLVER_PATH}/N{len(self.estado_inicial)}{self.pagina}/{self.estado_inicial}"
         )
 
-    def generar_red(self, dimensiones: int, datos_discretos: bool = True) -> str:
+    def generar_red(
+        self,
+        dimensiones: int,
+        datos_discretos: bool = True,
+        pagina: str | None = None,
+        auto_confirm: bool = False,
+    ) -> str | None:
         """
-        Se encarga de generar una red (TPM) en notación little endian para un sistema determinista o no determinista 
-        (esto en función a si contiene datos discretos o no respectivamente. Nunca confundir con un "Sistema continuo" 
-        puesto apela a otra definición totalmente diferente).
-        La red generada se almacenará en el "output_dir", un atributo dinámico en función a que si generaste una red de 
-        un tamaño X por primera vez, estará etiquetada como "A", si deseas generar otra red del mismo tamaño se generará
-        automáticamente con etiqueta "B", "C", etc., cada una con datos diferentes basados en variaciones de la semilla.
-
-        Args:
-            dimensiones (int): Número de nodos/elementos/variables/canales que se desea maneje la red, obteniendo un Sistema que para cada estado en $(t)$ tendrá un canal en $(t+1)$.
-            datos_discretos (bool, optional): Selecciona si se quiere que la red generada sea no determinista, con el valor de probabilidad como siempre, un real positivo entre 0 y 1 inclusivo. Por defecto es True.
-
-        Raises:
-            ValueError: Si las dimensiones son menores a 1.
-
-        Returns:
-            str: El nombre del archivo generado (ej: N20A.csv, N20B.csv, etc.)
+        Genera una TPM en ``self.ruta_base``. Si ``pagina`` se indica (ej. ``A``),
+        crea ``N{dimensiones}{pagina}.csv``; si no, usa la primera letra libre (A, B, …).
         """
         if dimensiones < 1:
             raise ValueError("Las dimensiones deben ser positivas")
 
-        # Calcular tamaño y tiempo estimado
+        if pagina is None:
+            suffix = ABC_START
+            variant_number = 0
+            while (self.ruta_base / f"N{dimensiones}{suffix}.{CSV_EXTENSION}").exists():
+                variant_number += 1
+                suffix = chr(ord(ABC_START) + variant_number)
+                if variant_number > 25:
+                    raise RuntimeError(
+                        f"Se alcanzo el limite de variantes (26) para N{dimensiones}"
+                    )
+        else:
+            suffix = pagina.upper()
+            variant_number = ord(suffix) - ord(ABC_START)
+
+        return self._escribir_tpm(
+            dimensiones, suffix, variant_number, datos_discretos, auto_confirm
+        )
+
+    def _escribir_tpm(
+        self,
+        dimensiones: int,
+        suffix: str,
+        variant_number: int,
+        datos_discretos: bool,
+        auto_confirm: bool,
+    ) -> str | None:
         num_estados = 1 << dimensiones
-        total_size_gb = (num_estados * dimensiones*4) / (1024**3)
+        total_size_gb = (num_estados * dimensiones * 4) / (1024**3)
         estimated_time = total_size_gb * 2
 
+        filename = f"N{dimensiones}{suffix}.{CSV_EXTENSION}"
+        filepath = self.ruta_base / filename
+
+        if filepath.exists():
+            print(f"TPM ya existe: {filepath}")
+            return filename
+
+        print(f"Generando TPM {filename} ...")
         print(f"Tamaño estimado: {total_size_gb:.6f} GB")
         print(f"Tiempo estimado: {estimated_time:.1f} segundos")
 
-        if total_size_gb > 1:
-            if (
-                input("El sistema ocupará más de 1GB. ¿Continuar? (s/n): ").lower()
-                != "s"
-            ):
+        if total_size_gb > 1 and not auto_confirm:
+            if os.getenv("GEOMIP_AUTO_TPM", "").lower() not in ("1", "true", "si", "s"):
+                print(
+                    f"TPM {filename} supera 1 GB. "
+                    "Defina GEOMIP_AUTO_TPM=1 para generar sin confirmacion."
+                )
                 return None
+            print("GEOMIP_AUTO_TPM=1: generando sin confirmacion interactiva.")
 
-        # Verificar archivos existentes y generar nuevo nombre
-        base_path = Path(SAMPLES_PATH)
-        base_path.mkdir(parents=True, exist_ok=True)
+        self.ruta_base.mkdir(parents=True, exist_ok=True)
 
-        suffix = ABC_START
-        variant_number = 0
-        while (base_path / f"N{dimensiones}{suffix}.{CSV_EXTENSION}").exists():
-            variant_number += 1
-            suffix = chr(ord(ABC_START) + variant_number)
-            if variant_number > 25:
-                raise RuntimeError(f"Se alcanzó el límite de variantes (26) para N{dimensiones}")
-
-        filename = f"N{dimensiones}{suffix}.{CSV_EXTENSION}"
-        filepath = base_path / filename
-
-        # Generar estados
         print("Generando estados...")
         start_time = time.time()
 
-        # Variar la semilla según el número de variante para generar TPMs diferentes
         seed = aplicacion.semilla_numpy + variant_number * 1000
         np.random.seed(seed)
 
-            # 1. Probabilidades base en [0.2, 0.8] — evita ruido blanco puro (0.5)
-        states = np.random.uniform(
-                0.2, 0.8, size=(num_estados, dimensiones)
-            ).astype(np.float32)
-            # 2. Representación binaria de cada índice de fila
-            #    Permite introducir dependencia causal entre nodos según el estado
+        states = np.random.uniform(0.2, 0.8, size=(num_estados, dimensiones)).astype(
+            np.float32
+        )
         state_indices = np.arange(num_estados)[:, np.newaxis]
-        shifts        = np.arange(dimensiones - 1, -1, -1)
+        shifts = np.arange(dimensiones - 1, -1, -1)
         binary_states = (state_indices >> shifts) & 1
- 
-            # 3. Vecinos circulares — cada nodo depende de sus adyacentes en la cadena
-        left_neighbors  = np.roll(binary_states, shift=1,  axis=1)
+
+        left_neighbors = np.roll(binary_states, shift=1, axis=1)
         right_neighbors = np.roll(binary_states, shift=-1, axis=1)
- 
-            # 4. Ajuste de probabilidades según vecindad activa
-            #    Crea alta integración φ: cualquier partición pierde información causal
-        states += 0.15 * left_neighbors    # vecino izquierdo sube probabilidad
-        states -= 0.10 * right_neighbors   # vecino derecho baja probabilidad
- 
-            # 5. Clamp estricto — EMD necesita probabilidades en (0, 1) abierto
+
+        states += 0.15 * left_neighbors
+        states -= 0.10 * right_neighbors
         states = np.clip(states, 0.000001, 0.999999)
 
-        print(f"Generación completada en {time.time() - start_time:.2f} segundos")
+        print(f"Generacion completada en {time.time() - start_time:.2f} segundos")
 
-        # Guardar archivo
         print(f"Guardando en {filepath}...")
         start_time = time.time()
-        # np.savetxt(
-        #     filepath, states, delimiter=COLON_DELIM, fmt="%d" if datos_discretos else "%.6f"
-        # )
-        CHUNK_ROWS = 65_536
-        fmt        = "%.6f"
- 
+        chunk_rows = 65_536
+        fmt = "%.6f"
+
         with open(filepath, "w") as f:
-            for start in range(0, num_estados, CHUNK_ROWS):
-                end = min(start + CHUNK_ROWS, num_estados)
+            for start in range(0, num_estados, chunk_rows):
+                end = min(start + chunk_rows, num_estados)
                 np.savetxt(f, states[start:end], delimiter=COLON_DELIM, fmt=fmt)
                 pct = end / num_estados * 100
                 print(f"  [{pct:5.1f}%] {end:,}/{num_estados:,} filas escritas", end="\r")

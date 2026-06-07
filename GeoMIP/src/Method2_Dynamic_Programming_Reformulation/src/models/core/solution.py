@@ -291,4 +291,3 @@ class Solution:
                 La misma representación que __str__ para consistencia.
         """
         return self.__str__()
-

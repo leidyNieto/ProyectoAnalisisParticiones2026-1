@@ -78,10 +78,23 @@ uv run exec.py
 
 ### Entrada por defecto
 
-- Excel entrada: `GeoMIP/results/Pruebas_Metodo2.xlsx`
-- Hoja usada actualmente: indice `8`
-- Columna subsistema: `B`
+- Excel entrada: `GeoMIP/results/PruebasIniciales.xlsx`
+- Columnas esperadas:
+  - `Sistema` — mascara binaria o letras (condicionamiento completo)
+  - `Sistema candidato` — variables que permanecen tras condicionar
+  - `Estado inicial` — cadena binaria (ej. `100` para 3 nodos)
+  - `Subcandidato` — subsistema como `alcance|mecanismo` en letras o binario (ej. `ABC|abc`)
+
+Tambien acepta el formato legado (`Subsistema` con `alcance|mecanismo` en columna B).
+
+Variables de entorno opcionales:
+
+- `GEOMIP_INPUT_XLSX` — ruta al Excel de pruebas
+- `GEOMIP_OUTPUT_XLSX` — ruta de salida
+- `GEOMIP_STRATEGY` — `Geometric` (default, GeoMIP k=2..5 sin fuerza bruta) o `KPartition` (solo validacion exhaustiva)
+- `GEOMIP_SHEET` — indice de hoja (default `0`)
 
 ### Salida por defecto
 
 - Excel salida: `GeoMIP/results/resultados_Geometric.xlsx`
+- Columnas: k optimo, particion, perdida (φ), tiempo de ejecucion

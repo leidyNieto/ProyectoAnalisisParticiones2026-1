@@ -1,5 +1,5 @@
 from src.funcs.base import ABECEDARY, LOWER_ABECEDARY
-from src.constants.base import VOID_STR
+from src.constants.base import ACTUAL, EFECTO, VOID_STR
 
 
 def fmt_biparticion(
@@ -35,6 +35,39 @@ def fmt_biparte_q(
     top_dual, bottom_dual = fmt_parte_q(dual, to_sort)
 
     return f"{top_prim}{top_dual}\n{bottom_prim}{bottom_dual}"
+
+
+def partes_a_clave(
+    partes_purview: list,
+    partes_mecanismo: list,
+) -> tuple[tuple[tuple[int, int], ...], ...]:
+    """Convierte partes purview/mecanismo en claves para formateo.
+
+    Devuelve una tupla de tuplas para que la clave sea hashable
+    y pueda usarse en cachés como `memoria_particiones`.
+    """
+    k = max(len(partes_purview), len(partes_mecanismo))
+    clave: list[tuple[tuple[int, int], ...]] = []
+    for j in range(k):
+        parte: list[tuple[int, int]] = []
+        for idx in partes_mecanismo[j] if j < len(partes_mecanismo) else []:
+            parte.append((ACTUAL, int(idx)))
+        for idx in partes_purview[j] if j < len(partes_purview) else []:
+            parte.append((EFECTO, int(idx)))
+        clave.append(tuple(parte))
+    return tuple(clave)
+
+
+def fmt_k_particion(partes: list[list[tuple[int, int]]]) -> str:
+    """Formatea una k-partición con k bloques horizontales."""
+    if not partes:
+        return "∅\n"
+    tops, bottoms = [], []
+    for parte in partes:
+        top, bottom = fmt_parte_q(list(parte))
+        tops.append(top)
+        bottoms.append(bottom)
+    return "".join(tops) + "\n" + "".join(bottoms)
 
 
 def fmt_parte_q(parte: list[tuple[int, int]], to_sort: bool = True) -> tuple[str, str]:
