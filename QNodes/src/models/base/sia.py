@@ -3,14 +3,18 @@ import time
 
 import numpy as np
 import numpy.typing as NDArray
+from colorama import Fore, Style
 
 from src.constants.models import SIA_PREPARATION_TAG
 from src.middlewares.slogger import SafeLogger
 from src.models.core.system import System
 
 from src.constants.base import (
+    ACTUAL,
     COLS_IDX,
+    EFFECT,
     FLOAT_ZERO,
+    INFTY_POS,
     STR_ZERO,
 )
 from src.constants.error import (
@@ -98,6 +102,101 @@ class SIA(ABC):
         self.sia_subsistema = subsistema
         self.sia_dists_marginales = subsistema.distribucion_marginal()
         self.sia_tiempo_inicio = time.time()
+
+    # ------------------------------------------------------------------ #
+    #  K-particiones  (compartido por BruteForce y QNodes)               #
+    # ------------------------------------------------------------------ #
+
+    def sia_buscar_mejor_k_particion(
+        self,
+        vertices: list[tuple[int, int]],
+        k: int,
+    ) -> tuple[float, list, np.ndarray]:
+        from src.funcs.iit import emd_efecto
+
+        mejor_perdida = INFTY_POS
+        mejor_particion = None
+        mejor_dist = None
+
+        for particion in SIA._sia_particionar_valida(vertices, k):
+            perdida, dist = self.sia_calcular_perdida_k(particion)
+            if perdida < mejor_perdida:
+                mejor_perdida = perdida
+                mejor_particion = [list(g) for g in particion]
+                mejor_dist = dist
+
+        return mejor_perdida, mejor_particion, mejor_dist
+
+    def sia_calcular_perdida_k(
+        self,
+        grupos_vertices: list,
+    ) -> tuple[float, np.ndarray]:
+        from src.funcs.iit import emd_efecto
+
+        grupos_indices = []
+        for grupo in grupos_vertices:
+            alcance_i = np.array([idx for t, idx in grupo if t == EFFECT], dtype=np.int8)
+            mecanismo_i = np.array([idx for t, idx in grupo if t == ACTUAL], dtype=np.int8)
+            grupos_indices.append((alcance_i, mecanismo_i))
+
+        sistema_partido = self.sia_subsistema.k_partir(grupos_indices)
+        dist = sistema_partido.distribucion_marginal()
+        perdida = emd_efecto(dist, self.sia_dists_marginales)
+        return perdida, dist
+
+    @staticmethod
+    def _sia_particionar_valida(vertices: list, k: int):
+        yield from SIA._sia_particionar(vertices, k)
+
+    @staticmethod
+    def _sia_particionar(elementos: list, k: int):
+        if k == 1:
+            yield [tuple(elementos)]
+            return
+        if len(elementos) == k:
+            yield [tuple([e]) for e in elementos]
+            return
+        primer = elementos[0]
+        resto = elementos[1:]
+        for particion in SIA._sia_particionar(resto, k - 1):
+            yield [(primer,)] + particion
+        for particion in SIA._sia_particionar(resto, k):
+            for i in range(len(particion)):
+                nueva = [
+                    (primer,) + particion[j] if j == i else particion[j]
+                    for j in range(len(particion))
+                ]
+                yield nueva
+
+    @staticmethod
+    def sia_imprimir_resultados_k(
+        resultados: dict,
+        mejor_k: int,
+        etiqueta: str = "",
+    ) -> None:
+        from src.funcs.format import fmt_geomip_k_particion
+
+        ancho = 64
+        linea = "─" * ancho
+        print(f"\n{Fore.CYAN}{linea}")
+        titulo = f"  {etiqueta} — Evaluación k-particiones (k = 2 … 5)" if etiqueta else "  Evaluación k-particiones (k = 2 … 5)"
+        print(f"{Fore.YELLOW}{titulo}")
+        print(f"{Fore.CYAN}{linea}{Style.RESET_ALL}")
+        for k, res in sorted(resultados.items()):
+            es_mejor = k == mejor_k
+            color_k = Fore.GREEN if es_mejor else Fore.WHITE
+            marca = f"  {Fore.GREEN}◀ MEJOR{Style.RESET_ALL}" if es_mejor else ""
+            print(f"{color_k}K={k}{marca}")
+            if res["particion"] is not None:
+                fmt = fmt_geomip_k_particion(res["particion"])
+                for linea_fmt in fmt.splitlines():
+                    print(f"{Fore.MAGENTA}{linea_fmt}{Style.RESET_ALL}")
+            print(
+                f"{Fore.BLUE}φ = {res['perdida']:.7f}  "
+                f"{Fore.WHITE}tiempo = {res['tiempo']:.4f}s{Style.RESET_ALL}"
+            )
+            print()
+        print(f"{Fore.CYAN}{linea}{Style.RESET_ALL}\n")
 
     def chequear_parametros(
         self, estado_inicial: str, candidato: str, futuro: str, presente: str

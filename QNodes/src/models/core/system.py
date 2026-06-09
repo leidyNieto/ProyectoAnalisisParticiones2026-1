@@ -283,6 +283,40 @@ class System:
             distribucion[i] = probabilidad
         return distribucion
 
+    def k_partir(
+        self,
+        grupos: list[tuple["NDArray[np.int8]", "NDArray[np.int8]"]],
+    ) -> "System":
+        """
+        Genera una k-partición del sistema.
+
+        Args:
+            grupos: lista de (alcance_i, mecanismo_i) por cada grupo i.
+                    alcance_i: índices de n-cubos (futuro) que pertenecen al grupo i.
+                    mecanismo_i: dimensiones (presente) que pertenecen al grupo i.
+
+        Returns:
+            System con los n-cubos marginalizados según su grupo.
+        """
+        nuevo_sistema = System.__new__(System)
+        nuevo_sistema.estado_inicial = self.estado_inicial
+        nuevo_sistema.memo = {}
+
+        ncubos_nuevos = []
+        for cubo in self.ncubos:
+            mecanismo_i = None
+            for alcance_i, mec_i in grupos:
+                if cubo.indice in alcance_i:
+                    mecanismo_i = mec_i
+                    break
+            if mecanismo_i is None:
+                continue
+            dims_a_marginalizar = np.setdiff1d(cubo.dims, mecanismo_i)
+            ncubos_nuevos.append(cubo.marginalizar(dims_a_marginalizar))
+
+        nuevo_sistema.ncubos = tuple(ncubos_nuevos)
+        return nuevo_sistema
+
     def __str__(self) -> str:
         sub_dims = self.dims_ncubos
         cubos_info = [f"{c}" for c in self.ncubos]

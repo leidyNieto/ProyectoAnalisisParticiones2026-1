@@ -1,10 +1,11 @@
 import time
 from typing import Union
 import numpy as np
+from colorama import Fore, Style
 from src.middlewares.slogger import SafeLogger
 from src.funcs.iit import emd_efecto, ABECEDARY
 from src.middlewares.profile import gestor_perfilado, profile
-from src.funcs.format import fmt_biparticion_q
+from src.funcs.format import fmt_biparticion_q, fmt_k_particion_q, fmt_geomip_k_particion
 from src.models.base.sia import SIA
 
 from src.models.core.solution import Solution
@@ -126,22 +127,17 @@ class QNodes(SIA):
     ):
         self.sia_preparar_subsistema(estado_inicial, condicion, alcance, mecanismo)
 
-        # e.g. (1,0)=A (1,1)=B (1,2)=C #
         futuro = tuple(
             (EFFECT, idx_efecto) for idx_efecto in self.sia_subsistema.indices_ncubos
         )
-
-        # e.g. (0,0)=a (0,2)=c (0,4)=e #
         presente = tuple(
             (ACTUAL, idx_actual) for idx_actual in self.sia_subsistema.dims_ncubos
         )
 
         self.m = self.sia_subsistema.indices_ncubos.size
         self.n = self.sia_subsistema.dims_ncubos.size
-
         self.indices_alcance = self.sia_subsistema.indices_ncubos
         self.indices_mecanismo = self.sia_subsistema.dims_ncubos
-
         self.tiempos = (
             np.zeros(self.n, dtype=np.int8),
             np.zeros(self.m, dtype=np.int8),
@@ -149,19 +145,50 @@ class QNodes(SIA):
 
         vertices = list(presente + futuro)
         self.vertices = set(presente + futuro)
-        mip = self.algorithm(vertices)
 
-        fmt_mip = fmt_biparticion_q(list(mip), self.nodes_complement(mip))
-        perdida_mip, dist_marginal_mip = self.memoria_grupo_candidato[mip]
+        resultados_por_k: dict = {}
+
+        # k=2: algoritmo Queyranne (óptimo) #
+        t0 = time.time()
+        self.memoria_grupo_candidato = {}
+        self.memoria_delta = {}
+        mip = self.algorithm(vertices)
+        perdida_2, dist_2 = self.memoria_grupo_candidato[mip]
+        resultados_por_k[2] = {
+            "perdida": perdida_2,
+            "particion": [list(mip), self.nodes_complement(mip)],
+            "dist": dist_2,
+            "tiempo": time.time() - t0,
+        }
+
+        # k=3,4,5: enumeración exhaustiva #
+        for k in range(3, 6):
+            if k > len(vertices):
+                break
+            t0 = time.time()
+            perdida_k, particion_k, dist_k = self.sia_buscar_mejor_k_particion(vertices, k)
+            resultados_por_k[k] = {
+                "perdida": perdida_k,
+                "particion": particion_k,
+                "dist": dist_k,
+                "tiempo": time.time() - t0,
+            }
+
+        # Mejor global #
+        mejor_k = min(resultados_por_k, key=lambda k: resultados_por_k[k]["perdida"])
+        mejor = resultados_por_k[mejor_k]
+
+        fmt_mip = fmt_k_particion_q(mejor["particion"])
 
         return Solution(
             estrategia=QNODES_LABEL,
-            perdida=perdida_mip,
+            perdida=mejor["perdida"],
             distribucion_subsistema=self.sia_dists_marginales,
-            distribucion_particion=dist_marginal_mip,
+            distribucion_particion=mejor["dist"],
             tiempo_total=time.time() - self.sia_tiempo_inicio,
             particion=fmt_mip,
         )
+
 
     @profile(context={TYPE_TAG: QNODES_ANALYSIS_TAG})
     def algorithm(self, vertices: list[tuple[int, int]]):

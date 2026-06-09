@@ -57,81 +57,106 @@ class Manager:
         dataset = np.genfromtxt(self.tpm_filename, delimiter=COLON_DELIM)
         return dataset
 
-    def generar_red(self, dimensiones: int, datos_deterministas: bool = True) -> str:
+    def generar_red(
+        self,
+        dimensiones: int,
+        datos_discretos: bool = True,
+        pagina: str | None = None,
+        auto_confirm: bool = False,
+    ) -> str | None:
         """
-        Se encarga de generar una red (TPM) en notación little endian para un sistema determinista o estocástico (esto en función a si contiene datos discretos o no respectivamente. Nunca confundir con un "Sistema continuo" puesto apela a otra definición totalmente diferente).
-        La red generada almacenará en el "output_dir", un atributo dinámico en función a que si generaste una red de un tamaño X por primera vez, estará etiquetada como "A", si deseas generar otra red del mismo tamaño naturalmente contendrá los mismos datos puesto están determinados por la semilla numpy, de forma que la forma de obtener otra red diferente es actuando sobre el parámetro `datos_deterministas`, siendo estas dos redes distintas en su contenido.
-
-        Args:
-            dimensiones (int): Número de nodos/elementos/variables/canales que se desea maneje la red, obteniendo un Sistema que para cada estado en $(t)$ tendrá un canalen $(t+1)$.
-            datos_deterministas (bool, optional): Selecciona si se quiere que la red generada sea estocástica, con el valor de probabilidad como siempre, un real positivo entre 0 y 1 inclusivo. Por defecto es True.
-
-        Raises:
-            ValueError: Si las dimensiones son menores a 1.
-
-        Returns:
-            str: El nombre del archivo generado.
+        Genera una TPM en ``self.ruta_base``. Si ``pagina`` se indica (ej. ``A``),
+        crea ``N{dimensiones}{pagina}.csv``; si no, usa la primera letra libre (A, B, …).
         """
-        np.random.seed(aplicacion.semilla_numpy)
-
         if dimensiones < 1:
             raise ValueError("Las dimensiones deben ser positivas")
 
-        # Calcular tamaño y tiempo estimado
+        if pagina is None:
+            suffix = ABC_START
+            variant_number = 0
+            while (self.ruta_base / f"N{dimensiones}{suffix}.{CSV_EXTENSION}").exists():
+                variant_number += 1
+                suffix = chr(ord(ABC_START) + variant_number)
+                if variant_number > 25:
+                    raise RuntimeError(
+                        f"Se alcanzo el limite de variantes (26) para N{dimensiones}"
+                    )
+        else:
+            suffix = pagina.upper()
+            variant_number = ord(suffix) - ord(ABC_START)
+
+        return self._escribir_tpm(
+            dimensiones, suffix, variant_number, datos_discretos, auto_confirm
+        )
+
+    def _escribir_tpm(
+        self,
+        dimensiones: int,
+        suffix: str,
+        variant_number: int,
+        datos_discretos: bool,
+        auto_confirm: bool,
+    ) -> str | None:
         num_estados = 1 << dimensiones
-        total_size_gb = (num_estados * dimensiones) / (1024**3)
+        total_size_gb = (num_estados * dimensiones * 4) / (1024**3)
         estimated_time = total_size_gb * 2
 
+        filename = f"N{dimensiones}{suffix}.{CSV_EXTENSION}"
+        filepath = self.ruta_base / filename
+
+        if filepath.exists():
+            print(f"TPM ya existe: {filepath}")
+            return filename
+
+        print(f"Generando TPM {filename} ...")
         print(f"Tamaño estimado: {total_size_gb:.6f} GB")
         print(f"Tiempo estimado: {estimated_time:.1f} segundos")
 
-        if (
-            total_size_gb > 1
-            and input("El sistema ocupará más de 1GB. ¿Continuar? (s/n): ").lower()
-            != "s"
-        ):
-            return
+        if total_size_gb > 1 and not auto_confirm:
+            if os.getenv("GEOMIP_AUTO_TPM", "").lower() not in ("1", "true", "si", "s"):
+                print(
+                    f"TPM {filename} supera 1 GB. "
+                    "Defina GEOMIP_AUTO_TPM=1 para generar sin confirmacion."
+                )
+                return None
+            print("GEOMIP_AUTO_TPM=1: generando sin confirmacion interactiva.")
 
-        # Verificar archivos existentes y generar nuevo nombre
-        base_path = Path(PATH_SAMPLES)
-        base_path.mkdir(parents=True, exist_ok=True)
+        self.ruta_base.mkdir(parents=True, exist_ok=True)
 
-        suffix = ABC_START
-        while (base_path / f"N{dimensiones}{suffix}.{CSV_EXTENSION}").exists():
-            if (
-                input(
-                    f"Ya existe N{dimensiones}{suffix}.{CSV_EXTENSION}. ¿Generar nueva red? (s/n): "
-                ).lower()
-                != "s"
-            ):
-                return f"N{dimensiones}{suffix}.{CSV_EXTENSION}"
-            suffix = chr(ord(suffix) + 1)
-
-        filename = f"N{dimensiones}{suffix}.{CSV_EXTENSION}"
-        filepath = base_path / filename
-
-        # Generar estados
         print("Generando estados...")
         start_time = time.time()
 
-        if datos_deterministas:
-            states = np.random.randint(
-                2, size=(num_estados, dimensiones), dtype=np.int8
-            )
-        else:
-            states = np.random.random(size=(num_estados, dimensiones))
+        seed = aplicacion.semilla_numpy + variant_number * 1000
+        np.random.seed(seed)
 
-        print(f"Generación completada en {time.time() - start_time:.2f} segundos")
+        states = np.random.uniform(0.2, 0.8, size=(num_estados, dimensiones)).astype(
+            np.float32
+        )
+        state_indices = np.arange(num_estados)[:, np.newaxis]
+        shifts = np.arange(dimensiones - 1, -1, -1)
+        binary_states = (state_indices >> shifts) & 1
 
-        # Guardar archivo
+        left_neighbors = np.roll(binary_states, shift=1, axis=1)
+        right_neighbors = np.roll(binary_states, shift=-1, axis=1)
+
+        states += 0.15 * left_neighbors
+        states -= 0.10 * right_neighbors
+        states = np.clip(states, 0.000001, 0.999999)
+
+        print(f"Generacion completada en {time.time() - start_time:.2f} segundos")
+
         print(f"Guardando en {filepath}...")
         start_time = time.time()
-        np.savetxt(
-            filepath,
-            states,
-            delimiter=COLON_DELIM,
-            fmt="%d" if datos_deterministas else "%.6f",
-        )
+        chunk_rows = 65_536
+        fmt = "%.6f"
+
+        with open(filepath, "w") as f:
+            for start in range(0, num_estados, chunk_rows):
+                end = min(start + chunk_rows, num_estados)
+                np.savetxt(f, states[start:end], delimiter=COLON_DELIM, fmt=fmt)
+                pct = end / num_estados * 100
+                print(f"  [{pct:5.1f}%] {end:,}/{num_estados:,} filas escritas", end="\r")
+        print()
 
         file_size_gb = os.path.getsize(filepath) / (1024**3)
         print(f"Archivo guardado: {file_size_gb:.6f} GB")

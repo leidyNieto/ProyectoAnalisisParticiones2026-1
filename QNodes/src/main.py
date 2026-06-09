@@ -1,7 +1,7 @@
 from src.controllers.manager import Manager
 
-# 👇 Importación de estrategias 👇 #
-from src.strategies.force import BruteForce
+# Importación de estrategias
+from src.strategies.q_nodes import QNodes
 
 
 def iniciar():
@@ -16,10 +16,9 @@ def iniciar():
     gestor_redes = Manager(estado_inicial)
     mpt = gestor_redes.cargar_red()
 
-    ### Ejemplo de solución mediante módulo de fuerza bruta ###
-    analizador_bf = BruteForce(mpt)
+    analizador = QNodes(mpt)
 
-    sia_cero = analizador_bf.aplicar_estrategia(
+    sia_cero = analizador.aplicar_estrategia(
         estado_inicial,
         condiciones,
         alcance,

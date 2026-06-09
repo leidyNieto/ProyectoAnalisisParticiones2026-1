@@ -50,6 +50,42 @@ def fmt_biparticion_q(
     return f"{top_prim}{top_dual}\n{bottom_prim}{bottom_dual}\n"
 
 
+def fmt_k_particion_q(grupos_vertices: list[list[tuple[int, int]]]) -> str:
+    """Formatea una k-partición (k >= 2) en la misma notación fraccionaria."""
+    partes = sorted(grupos_vertices, key=lambda g: min(v[1] for v in g))
+    tops, bottoms = [], []
+    for grupo in partes:
+        top, bottom = fmt_parte_q(list(grupo))
+        tops.append(top)
+        bottoms.append(bottom)
+    return "".join(tops) + "\n" + "".join(bottoms) + "\n"
+
+
+def fmt_geomip_k_particion(grupos_vertices: list[list[tuple[int, int]]]) -> str:
+    """
+    Formatea una k-partición en el estilo de GeoMIP:
+        | G1_futuro || G2_futuro || G3_futuro |
+        | G1_presente || G2_presente || G3_presente |
+    """
+    partes = sorted(grupos_vertices, key=lambda g: min(v[1] for v in g))
+
+    segmentos_top, segmentos_bot = [], []
+    for grupo in partes:
+        futuros = sorted(
+            [ABECEDARY[idx] for t, idx in grupo if t == 1],
+        )
+        presentes = sorted(
+            [LOWER_ABECEDARY[idx] for t, idx in grupo if t == 0],
+        )
+        segmentos_top.append(COLON_DELIM.join(futuros) if futuros else VOID_STR)
+        segmentos_bot.append(COLON_DELIM.join(presentes) if presentes else VOID_STR)
+
+    sep = " || "
+    linea_top = "| " + sep.join(segmentos_top) + " |"
+    linea_bot = "| " + sep.join(segmentos_bot) + " |"
+    return f"{linea_top}\n{linea_bot}"
+
+
 def fmt_parte_q(
     parte: list[tuple[int, int]], a_ordenar: bool = True
 ) -> tuple[str, str]:
