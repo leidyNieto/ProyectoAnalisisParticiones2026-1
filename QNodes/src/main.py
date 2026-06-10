@@ -18,10 +18,11 @@ def iniciar():
 
     analizador = QNodes(mpt)
 
-    sia_cero = analizador.aplicar_estrategia(
+    # La tabla por-k (k = 2 … 5) se imprime dentro de aplicar_estrategia.
+    analizador.aplicar_estrategia(
         estado_inicial,
         condiciones,
         alcance,
-        mecanismo,
+        mecanismo
     )
-    print(sia_cero)
+    
