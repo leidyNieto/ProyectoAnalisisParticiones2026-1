@@ -51,6 +51,7 @@ class SIA(ABC):
         return np.genfromtxt(
             self.sia_gestor.tpm_filename,
             delimiter=COLON_DELIM,
+            dtype=np.float32
         )
 
     def sia_preparar_subsistema(

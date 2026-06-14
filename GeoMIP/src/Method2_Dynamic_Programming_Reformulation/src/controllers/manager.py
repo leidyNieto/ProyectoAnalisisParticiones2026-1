@@ -48,11 +48,11 @@ class Manager:
                 return
 
         method2_root = Path(__file__).resolve().parents[2]
-        geomip_root = Path(__file__).resolve().parents[4]
+        PROJECT_ROOT = Path(__file__).resolve().parents[4]
         candidates = (
             method2_root / "src" / ".samples",
             method2_root / ".samples",
-            geomip_root / "data" / "samples",
+            PROJECT_ROOT / "data" / "samples",
         )
 
         for candidate in candidates:

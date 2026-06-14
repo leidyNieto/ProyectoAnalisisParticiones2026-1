@@ -6,6 +6,8 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
+COST_DTYPE = np.float32  # tabla de costos en float32 (mitad de memoria que float64)
+
 from src.constants.base import ACTUAL, EFECTO, NET_LABEL, TYPE_TAG
 from src.constants.models import (
     GEOMETRIC_ANALYSIS_TAG,
@@ -145,9 +147,7 @@ class GeometricSIA(SIA):
                     clave_k = clave
 
             if clave_k:
-                print(f"K={k}"),
-                print(fmt_k_particion(clave_k)),
-                print(perdida_k),
+
                 self.resultados_por_k[k] = {
                     "particion": fmt_k_particion(clave_k),
                     "perdida": perdida_k,
@@ -165,72 +165,68 @@ class GeometricSIA(SIA):
 
         return mejor_k, mejor_clave, mejor_perdida, mejor_dist
 
-    # def _construir_tabla_costos(self) -> None:
-    #     estado_inicial = self.estado_inicial
-    #     estado_final = self.estado_final
-    #     self.idx_ncubos = list(range(len(self.sia_subsistema.indices_ncubos)))
-    #     self.caminos = {0: [estado_inicial.tolist()]}
-    #     self.tabla_transiciones.clear()
-    #     self.tabla_transiciones[
-    #         tuple(self.caminos[0][0]), tuple(self.caminos[0][0])
-    #     ] = [0.0] * len(self.idx_ncubos)
-    #     for nivel in range(1, len(estado_inicial) + 1):
-    #         self.calcular_costos_nivel(estado_final, nivel)
+   
     def _construir_tabla_costos(self) -> None:
         """
-        Construye la tabla de costos T[i,j] para todas las transiciones.
- 
-        La guía (Algoritmo 1) requiere calcular t(i,j) para cada par de
-        vértices del hipercubo. Para mantener la complejidad manejable,
-        iteramos sobre todos los 2^n estados como origen y calculamos sus
-        transiciones BFS hacia el estado complementario.  El resultado
-        garantiza que los candidatos geométricos accedan a costos desde
-        cualquier estado, no solo desde el estado inicial del subsistema.
+        Construye la tabla de costos T[i,j] mediante BFS desde el estado inicial
+        del subsistema hacia su estado complementario, nivel por nivel (Hamming
+        1, 2, ..., n), aplicando la función de costo recursiva de la guía
+        (Algoritmo 1).
+
+        Complejidad O(n · 2^n): se explora el hipercubo UNA sola vez desde el
+        estado inicial. (Antes se reconstruía la tabla desde los 2^n estados
+        origen, lo que elevaba el costo a ~O(n · 4^n) — inviable para los
+        tamaños de prueba de 15..25 nodos y, en la práctica, una exploración
+        exhaustiva del espacio de estados que contradice el enfoque geométrico.)
         """
         n = len(self.estado_inicial)
         self.idx_ncubos = list(range(len(self.sia_subsistema.indices_ncubos)))
-        self.tabla_transiciones.clear()
- 
-        # Siempre construir desde el estado inicial del subsistema (base principal)
-        estado_ini = self.estado_inicial.tolist()
-        estado_fin = (1 - self.estado_inicial).tolist()
-        self.caminos = {0: [estado_ini]}
-        self.tabla_transiciones[
-            tuple(estado_ini), tuple(estado_ini)
-        ] = [0.0] * len(self.idx_ncubos)
+        n_fut = len(self.idx_ncubos)
+        size = 1 << n
+        self.full = size - 1
+
+        ini = [int(b) for b in self.estado_inicial]
+        self.base = sum(b << i for i, b in enumerate(ini))
+        base = self.base
+
+        # F[m, f]: valor X_f en el estado de mascara absoluta m (mismo indexado
+        # que _flat_data: bit i con peso 2^i).
+        F = np.empty((size, n_fut), dtype=COST_DTYPE)
+        for f, flat in enumerate(self._flat_data):
+            F[:, f] = np.asarray(flat, dtype=COST_DTYPE).ravel()
+
+        # Tabla de costos como UN arreglo indexado por entero (reemplaza el dict
+        # de 2^n claves-tupla -> menor complejidad espacial, sin parseo de str).
+        self.Tcost = np.zeros((size, n_fut), dtype=COST_DTYPE)
+        self.caminos = {0: [base]}
+
+        prev = [base]
         for nivel in range(1, n + 1):
-            self.calcular_costos_nivel(np.array(estado_fin), nivel)
- 
-        # Extender la tabla desde los demás vértices del hipercubo
-        # Esto permite que los candidatos geométricos detecten estructuras
-        # causales que no son visibles solo desde el estado inicial.
-        todos_estados = [
-            list(map(int, format(i, f"0{n}b")))
-            for i in range(2 ** n)
-        ]
-        for s_origen in todos_estados:
-            if s_origen == estado_ini:
-                continue  # ya está calculado
-            key_self = (tuple(s_origen), tuple(s_origen))
-            if key_self not in self.tabla_transiciones:
-                self.tabla_transiciones[key_self] = [0.0] * len(self.idx_ncubos)
-            s_destino = [1 - b for b in s_origen]
-            # BFS nivel a nivel desde s_origen hacia su complemento
-            caminos_aux: Dict[int, List[List[int]]] = {0: [s_origen]}
-            for nivel in range(1, n + 1):
-                visitados: set = set()
-                caminos_aux[nivel] = []
-                for estado_anterior in caminos_aux[nivel - 1]:
-                    estado_actual = np.array(estado_anterior)
-                    for i in range(n):
-                        if estado_actual[i] != s_destino[i]:
-                            nuevo = estado_actual.copy()
-                            nuevo[i] = s_destino[i]
-                            t = tuple(nuevo)
-                            if t not in visitados:
-                                caminos_aux[nivel].append(nuevo.tolist())
-                                self.calcular_costo(s_origen, nuevo.tolist(), self.idx_ncubos)
-                                visitados.add(t)
+            seen: set = set()
+            nivel_masks: List[int] = []
+            factor = 1.0 / (1 << nivel)
+            for m in prev:
+                for i in range(n):
+                    if ((m >> i) & 1) == ini[i]:          # bit i aun sin voltear
+                        nm = m ^ (1 << i)                  # voltear hacia el final
+                        if nm in seen:
+                            continue
+                        seen.add(nm)
+                        nivel_masks.append(nm)
+                        # |X[i]-X[j]| vectorizado sobre TODAS las variables futuras
+                        acc = np.abs(F[base] - F[nm])
+                        if nivel > 1:                      # + costos de vecinos
+                            for j in range(n):
+                                if ((nm >> j) & 1) != ini[j]:
+                                    acc = acc + self.Tcost[nm ^ (1 << j)]
+                        self.Tcost[nm] = factor * acc
+            self.caminos[nivel] = nivel_masks
+            prev = nivel_masks
+
+        # Costo agregado por variable (lo que consumen los generadores de
+        # candidatos): se calcula UNA vez en vez de re-sumar la tabla por llamada.
+        self.costo_agregado = self.Tcost.sum(axis=0)
+        self.tabla_transiciones = {}
 
     def identificar_candidatos_k(
         self, k: int
@@ -255,24 +251,99 @@ class GeometricSIA(SIA):
         if k == 2:
             for presentes, futuros in self._candidatos_biparticion():
                 agregar(*self._biparticion_a_k_partes(presentes, futuros))
+            for pur, mec in self._candidatos_afinidad(2):
+                agregar(pur, mec)
+            # Mejor corte: prueba TODOS los cortes sobre las futuras ordenadas
+            # por costo; find_mip se queda con el de menor pérdida exacta.
+            for pur, mec in self._candidatos_corte_optimo(2):
+                agregar(pur, mec)
             return candidatos
 
         for presentes, futuros in self._candidatos_biparticion():
             agregar(*self._expandir_a_k_partes(presentes, futuros, k))
 
-        anclas = self._seleccionar_ancoras(k)
-        if anclas:
-            agregar(*self._asignar_por_ancoras(anclas, k))
+        # anclas = self._seleccionar_ancoras(k)
+        # if anclas:
+        #     agregar(*self._asignar_por_ancoras(anclas, k))
 
         recursivo = self._division_recursiva(k)
         if recursivo:
             agregar(*recursivo)
 
-        por_cero = self._agrupar_por_costo_cero(k)
-        if por_cero:
-            agregar(*por_cero)
+
+        # Candidatos geométricos por afinidad (aislamiento + clustering +
+        # división), los que alcanzan el óptimo en la validación contra fuerza
+        # bruta para k >= 3.
+        for pur, mec in self._candidatos_afinidad(k):
+            agregar(pur, mec)
+
+        # Mejor corte: segmenta las futuras (ordenadas por costo geométrico) en
+        # k grupos contiguos probando todas las posiciones de corte (acotado).
+        # Como find_mip evalúa la pérdida exacta y se queda con la mínima, esto
+        # garantiza que se elige el mejor corte y no uno fijo "a la mitad".
+        for pur, mec in self._candidatos_corte_optimo(k):
+            agregar(pur, mec)
 
         return candidatos
+
+    def _segmentaciones(self, n_items: int, k: int, cap: int) -> List[List[int]]:
+        """k-1 fronteras crecientes en 1..n_items-1 (segmentos contiguos),
+        en orden lexicográfico (aísla primero los grupos pequeños), hasta ``cap``
+        combinaciones. Polinómico y acotado; no enumera particiones del sistema."""
+        res: List[List[int]] = []
+
+        def rec(start: int, fronteras: List[int]) -> None:
+            if len(res) >= cap:
+                return
+            if len(fronteras) == k - 1:
+                res.append(list(fronteras))
+                return
+            for b in range(start, n_items):
+                if len(res) >= cap:
+                    return
+                rec(b + 1, fronteras + [b])
+
+        if k - 1 <= n_items - 1:
+            rec(1, [])
+        return res
+
+    def _candidatos_corte_optimo(
+        self, k: int
+    ) -> List[Tuple[List[List[int]], List[List[int]]]]:
+        """Ordena las futuras por costo geométrico acumulado (las más
+        independientes primero) y las parte en k segmentos contiguos, probando
+        TODAS las posiciones de corte (acotadas). El mecanismo de cada segmento
+        se asigna por afinidad. find_mip evalúa la pérdida exacta de cada corte y
+        conserva el menor: así el corte elegido es el de mínima pérdida, no uno
+        fijo a la mitad."""
+        n_fut = len(self.idx_ncubos)
+        n_mec = len(self.estado_inicial)
+        if not (2 <= k <= n_fut):
+            return []
+
+        costo = self.costo_agregado
+        orden = sorted(range(n_fut), key=lambda f: costo[f])
+
+        if not hasattr(self, "_aff"):
+            self._preparar_afinidad()
+
+        CAP = 600
+        out: List[Tuple[List[List[int]], List[List[int]]]] = []
+        for fronteras in self._segmentaciones(n_fut, k, CAP):
+            cortes = [0] + list(fronteras) + [n_fut]
+            grupos = [orden[cortes[i]:cortes[i + 1]] for i in range(k)]
+            if any(len(g) == 0 for g in grupos):
+                continue
+            partes_mec: List[List[int]] = [[] for _ in range(k)]
+            for mp in range(n_mec):
+                mejor, afin = 0, -1.0
+                for g in range(k):
+                    a = sum(self._aff[f][mp] for f in grupos[g])
+                    if a > afin:
+                        afin, mejor = a, g
+                partes_mec[mejor].append(mp)
+            out.append(([list(g) for g in grupos], partes_mec))
+        return out
 
     def _candidatos_biparticion(self) -> List[Tuple[List[int], List[int]]]:
         """Candidatos k=2 por complementariedad (GeoMIP secc. 4.2.4)."""
@@ -287,12 +358,7 @@ class GeometricSIA(SIA):
         ranking = []
 
         for idx in range(n_vars):
-            costo = 0
-
-            for costos in self.tabla_transiciones.values():
-                costo += costos[idx]
-
-            ranking.append((idx, costo))
+            ranking.append((idx, float(self.costo_agregado[idx])))
 
         ranking.sort(key=lambda x: x[1])
 
@@ -308,20 +374,18 @@ class GeometricSIA(SIA):
 
         es_par = len(self.caminos) % 2 == 0
         mitad = len(self.caminos) // 2 if es_par else (len(self.caminos) // 2) + 1
-        s0 = tuple(self.caminos[0][0])
+        s0 = self.base
+        n_mech = len(self.estado_inicial)
 
         for nivel in range(1, mitad):
             costo_min = float("inf")
             mejor: Tuple[List[int], List[int]] = ([], [])
-            for estado in self.caminos[nivel]:
-                actual = self.tabla_transiciones.get((s0, tuple(estado)))
-                complementario = self.tabla_transiciones.get(
-                    (s0, tuple((1 - np.array(estado)).tolist()))
-                )
-                if actual is None or complementario is None:
-                    continue
+            for m in self.caminos[nivel]:
+                actual = self.Tcost[m]
+                complementario = self.Tcost[m ^ self.full]
                 presentes = [
-                    idx for idx, bit in enumerate(estado) if bit == s0[idx]
+                    idx for idx in range(n_mech)
+                    if ((m >> idx) & 1) == ((s0 >> idx) & 1)
                 ]
                 futuros: List[int] = []
                 costo = 0.0
@@ -345,75 +409,6 @@ class GeometricSIA(SIA):
         return self._expandir_a_k_partes(presentes, futuros, 2)
 
   
-    #     self, presentes: List[int], futuros: List[int], k: int
-    # ) -> Tuple[List[List[int]], List[List[int]]]:
-    #     """Convierte una bipartición en k partes (las restantes quedan vacías)."""
-    #     n_fut = len(self.idx_ncubos)
-    #     n_mech = len(self.estado_inicial)
-    #     futuros2 = [i for i in range(n_fut) if i not in futuros]
-    #     presentes2 = [i for i in range(n_mech) if i not in presentes]
-    #     partes_pur = [futuros, futuros2]
-    #     partes_mec = [presentes, presentes2]
-    #     while len(partes_pur) < k:
-    #         partes_pur.append([])
-    #         partes_mec.append([])
-    #     return partes_pur[:k], partes_mec[:k]
-        
-    #     self, presentes: List[int], futuros: List[int], k: int
-    # ) -> Tuple[List[List[int]], List[List[int]]]:
-    #     """
-    #     Convierte una bipartición local en k partes asegurando consistencia dimensional.
-    #     Las variables remanentes del sistema se integran para evitar truncamiento (mantiene los 20 nodos).
-    #     """
-    #     n_fut = len(self.idx_ncubos)
-    #     n_mech = len(self.estado_inicial)
-        
-    #     # Recuperamos las variables completas que quedaron por fuera de la bipartición candidata
-    #     rem_futuros = [i for i in range(n_fut) if i not in futuros]
-    #     rem_presentes = [i for i in range(n_mech) if i not in presentes]
-
-    #     # Inicializamos los bloques base con la bipartición complementaria total de la red
-    #     bloques = [
-    #         (futuros, presentes),
-    #         (rem_futuros, rem_presentes)
-    #     ]
-
-    #     # Si ya alcanzamos o superamos k, ajustamos la longitud
-    #     while len(bloques) < k:
-    #         # Buscamos el bloque con mayor cantidad de variables combinadas para subdividirlo
-    #         idx = max(
-    #             range(len(bloques)),
-    #             key=lambda i: len(bloques[i][0]) + len(bloques[i][1])
-    #         )
-
-    #         fut, mec = bloques.pop(idx)
-
-    #         # Si el bloque más grande ya es indivisible, reinsertamos y salimos de forma segura
-    #         if len(fut) + len(mec) <= 1:
-    #             bloques.append((fut, mec))
-    #             break
-
-    #         mitad_fut = len(fut) // 2
-    #         mitad_mec = len(mec) // 2
-
-    #         fut1 = fut[:mitad_fut]
-    #         fut2 = fut[mitad_fut:]
-
-    #         mec1 = mec[:mitad_mec]
-    #         mec2 = mec[mitad_mec:]
-
-    #         bloques.append((fut1, mec1))
-    #         bloques.append((fut2, mec2))
-
-    #     # Garantizamos que la estructura devuelta contenga exactamente k listas (rellenando con vacíos si es necesario)
-    #     partes_pur = [b[0] for b in bloques]
-    #     partes_mec = [b[1] for b in bloques]
-        
-    #     while len(partes_pur) < k:
-    #         partes_pur.append([])
-    #         partes_mec.append([])
-
-    #     return partes_pur[:k], partes_mec[:k]
     def _expandir_a_k_partes(
         self,
         presentes: List[int],
@@ -460,13 +455,7 @@ class GeometricSIA(SIA):
             ranking_fut = []
 
             for variable in fut:
-
-                costo_total = 0.0
-
-                for costos in self.tabla_transiciones.values():
-                    costo_total += costos[variable]
-
-                ranking_fut.append((variable, costo_total))
+                ranking_fut.append((variable, float(self.costo_agregado[variable])))
 
             ranking_fut.sort(key=lambda x: x[1])
 
@@ -519,66 +508,6 @@ class GeometricSIA(SIA):
             partes_mec.append([])
         return partes_pur[:k], partes_mec[:k]
 
-    def _seleccionar_ancoras(self, k: int) -> List[List[int]]:
-        """Selecciona k estados ancla con costo agregado bajo y separación Hamming."""
-        s0 = tuple(self.caminos[0][0])
-        estados: List[Tuple[float, List[int]]] = []
-
-        for nivel, lista in self.caminos.items():
-            for estado in lista:
-                key = (s0, tuple(estado))
-                costos = self.tabla_transiciones.get(key)
-                if costos is None:
-                    continue
-                estados.append((sum(costos), estado))
-
-        estados.sort(key=lambda x: x[0])
-        anclas: List[List[int]] = []
-        for _, estado in estados:
-            if len(anclas) >= k:
-                break
-            if not anclas:
-                anclas.append(estado)
-                continue
-            if all(self.hamming(estado, a) >= 1 for a in anclas):
-                anclas.append(estado)
-
-        if len(anclas) < k and estados:
-            for _, estado in estados:
-                if estado not in anclas:
-                    anclas.append(estado)
-                if len(anclas) >= k:
-                    break
-        return anclas[:k]
-
-    def _asignar_por_ancoras(
-        self, anclas: List[List[int]], k: int
-    ) -> Tuple[List[List[int]], List[List[int]]]:
-        """Asigna variables al ancla con menor costo de transición (proyección geométrica)."""
-        s0 = tuple(self.caminos[0][0])
-        n_fut = len(self.idx_ncubos)
-        n_mech = len(self.estado_inicial)
-        partes_pur: List[List[int]] = [[] for _ in range(k)]
-        partes_mec: List[List[int]] = [[] for _ in range(k)]
-
-        for fi in range(n_fut):
-            costos = []
-            for ancla in anclas:
-                c = self.tabla_transiciones.get((s0, tuple(ancla)), [float("inf")] * n_fut)
-                costos.append(c[fi] if fi < len(c) else float("inf"))
-            partes_pur[int(np.argmin(costos))].append(fi)
-
-        for mi in range(n_mech):
-            asignado = False
-            for j, ancla in enumerate(anclas):
-                if ancla[mi] == s0[mi]:
-                    partes_mec[j].append(mi)
-                    asignado = True
-                    break
-            if not asignado:
-                partes_mec[int(np.argmin([self.hamming(s0, a) for a in anclas]))].append(mi)
-
-        return partes_pur, partes_mec
 
     def _division_recursiva(self, k: int) -> Tuple[List[List[int]], List[List[int]]] | None:
         """Divide recursivamente con biparticiones geométricas hasta obtener k partes."""
@@ -623,21 +552,17 @@ class GeometricSIA(SIA):
     def _mejor_biparticion_local(
         self, idxs_mec: List[int], idxs_fut: List[int]
     ) -> Tuple[List[int], List[int]]:
-        s0 = tuple(self.caminos[0][0])
+        s0 = self.base
         mitad = max(1, len(self.caminos) // 2)
         costo_min = float("inf")
         mejor_presentes: List[int] = list(idxs_mec)
         mejor_futuros: List[int] = idxs_fut[: max(1, len(idxs_fut) // 2)]
 
         for nivel in range(1, mitad + 1):
-            for estado in self.caminos.get(nivel, []):
-                actual = self.tabla_transiciones.get((s0, tuple(estado)))
-                comp = self.tabla_transiciones.get(
-                    (s0, tuple((1 - np.array(estado)).tolist()))
-                )
-                if actual is None or comp is None:
-                    continue
-                presentes = [i for i in idxs_mec if estado[i] == s0[i]]
+            for m in self.caminos.get(nivel, []):
+                actual = self.Tcost[m]
+                comp = self.Tcost[m ^ self.full]
+                presentes = [i for i in idxs_mec if ((m >> i) & 1) == ((s0 >> i) & 1)]
                 futuros: List[int] = []
                 costo = 0.0
                 for i in idxs_fut:
@@ -655,79 +580,59 @@ class GeometricSIA(SIA):
             mejor_futuros = idxs_fut[:1]
         return mejor_presentes, mejor_futuros
 
-    def _agrupar_por_costo_cero(
-        self, k: int
-    ) -> Tuple[List[List[int]], List[List[int]]] | None:
-        """Agrupa variables por transiciones de costo mínimo hacia el estado final."""
-        s0 = tuple(self.caminos[0][0])
-        s_f = tuple(self.estado_final.tolist())
-        costos = self.tabla_transiciones.get((s0, s_f))
-        if costos is None:
-            return None
 
-        n_fut = len(self.idx_ncubos)
-        n_mech = len(self.estado_inicial)
-        orden = sorted(range(n_fut), key=lambda i: costos[i])
-        partes_pur: List[List[int]] = [[] for _ in range(k)]
-        for rank, fi in enumerate(orden):
-            partes_pur[rank % k].append(fi)
-
-        partes_mec: List[List[int]] = [[] for _ in range(k)]
-        for mi in range(n_mech):
-            partes_mec[mi % k].append(mi)
-
-        return partes_pur, partes_mec
-
-    # def _particion_valida(
-    #     self, partes_pur: List[List[int]], partes_mec: List[List[int]], k: int
-    # ) -> bool:
-    #     if len(partes_pur) != k:
-    #         return False
-
-    #     if len(partes_mec) != k:
-    #         return False
-
-    #     no_vacias = [
-    #         i
-    #         for i in range(k)
-    #         if partes_pur[i] or partes_mec[i]
-    #     ]
-
-    #     if len(no_vacias) != k:
-    #         return False
-
-    #     todos_pur = sorted(
-    #         [x for grupo in partes_pur for x in grupo]
-    #     )
-
-    #     todos_mec = sorted(
-    #         [x for grupo in partes_mec for x in grupo]
-    #     )
-
-    #     if len(set(todos_pur)) != len(todos_pur):
-    #         return False
-
-    #     if len(set(todos_mec)) != len(todos_mec):
-    #         return False
-
-    #     return True
-    def _particion_valida(self,partes_pur,partes_mec,k):
-
-        if len(partes_pur) != k:
+   
+    def _particion_valida(self, partes_pur, partes_mec, k):
+        """Una k-partición válida cumple:
+        - exactamente ``k`` bloques en purview y en mecanismo;
+        - cada bloque tiene al menos una variable futura (el mecanismo puede ser
+          vacío: aislar una futura sin presentes es una partición legítima y, de
+          hecho, suele ser la óptima según la guía);
+        - **cobertura completa y sin duplicados**: cada variable futura y cada
+          dimensión presente aparece en exactamente un bloque.
+        """
+        if len(partes_pur) != k or len(partes_mec) != k:
             return False
-
-        if len(partes_mec) != k:
-            return False
-
         for i in range(k):
-
             if len(partes_pur[i]) == 0:
                 return False
-
-            if len(partes_mec[i]) == 0:
-                return False
-
+        n_fut = len(self.idx_ncubos)
+        n_mec = len(self.estado_inicial)
+        todos_fut = [x for grupo in partes_pur for x in grupo]
+        todos_mec = [x for grupo in partes_mec for x in grupo]
+        # sorted(...) == range(n) garantiza, a la vez, cobertura total
+        # (no falta ninguna) y ausencia de duplicados (ninguna repetida).
+        if sorted(todos_fut) != list(range(n_fut)):
+            return False
+        if sorted(todos_mec) != list(range(n_mec)):
+            return False
         return True
+    
+    # def _particion_valida(self, partes_pur, partes_mec, k):
+    #     """Una k-partición válida cumple:
+    #     - exactamente ``k`` bloques en purview y en mecanismo;
+    #     - cada bloque tiene al menos una variable futura Y al menos una dimensión
+    #       presente: NO se consideran bloques vacíos ni en futuro ni en presente
+    #       al generar las particiones;
+    #     - **cobertura completa y sin duplicados**: cada variable futura y cada
+    #       dimensión presente aparece en exactamente un bloque.
+    #     """
+    #     if len(partes_pur) != k or len(partes_mec) != k:
+    #         return False
+    #     for i in range(k):
+    #         if len(partes_pur[i]) == 0 or len(partes_mec[i]) == 0:
+    #             return False
+    #     n_fut = len(self.idx_ncubos)
+    #     n_mec = len(self.estado_inicial)
+    #     todos_fut = [x for grupo in partes_pur for x in grupo]
+    #     todos_mec = [x for grupo in partes_mec for x in grupo]
+    #     # sorted(...) == range(n) garantiza, a la vez, cobertura total
+    #     # (no falta ninguna) y ausencia de duplicados (ninguna repetida).
+    #     if sorted(todos_fut) != list(range(n_fut)):
+    #         return False
+    #     if sorted(todos_mec) != list(range(n_mec)):
+    #         return False
+    #     return True
     
     @staticmethod
     def _clave_candidato(partes_pur: List[List[int]], partes_mec: List[List[int]]) -> tuple:
@@ -788,8 +693,12 @@ class GeometricSIA(SIA):
         if distancia_hamming > 1:
             for i in range(len(estado_inicial)):
                 if estado_inicial[i] != estado_final[i]:
-                    nuevo_estado = estado_inicial.copy()
-                    nuevo_estado[i] = estado_final[i] 
+                    # Vecinos del estado FINAL revertidos un bit hacia el inicial
+                    # (estados a distancia d-1 de i sobre caminos óptimos hacia j),
+                    # tal como define la función de costo de la guía:
+                    #   t(i,j) = γ·(|X[i]-X[j]| + Σ_{k∈N(i,j)} t(i,k))
+                    nuevo_estado = estado_final.copy()
+                    nuevo_estado[i] = estado_inicial[i]
                     nuevo_estado_tuple = tuple(nuevo_estado)
                     temp_key = tuple(estado_inicial), nuevo_estado_tuple
                     for n in ncubos:
@@ -801,6 +710,165 @@ class GeometricSIA(SIA):
             else:
                 tmp.append(n)
         self.tabla_transiciones[key] = tmp
+
+    # ------------------------------------------------------------------ #
+    #  Candidatos geométricos por AFINIDAD futuro↔presente (sin fuerza     #
+    #  bruta). La pérdida es separable por variable futura: la contribución #
+    #  de cada n-cubo depende sólo de qué presentes comparten su bloque.    #
+    #  Esto permite generar pocas candidatas de alta calidad y evaluarlas   #
+    #  con la pérdida exacta (vía particionar_k) en tiempo polinómico.      #
+    # ------------------------------------------------------------------ #
+
+    def _preparar_afinidad(self) -> None:
+        """Precalcula la sensibilidad de cada variable futura al invertir cada
+        dimensión presente desde el estado inicial, y el costo de aislar cada
+        variable futura (marginalizar todas sus presentes). Índices POSICIONALES
+        consistentes con ``find_mip`` (posición en ``indices_ncubos`` /
+        ``dims_ncubos``)."""
+        from src.funcs.base import seleccionar_subestado
+
+        sub = self.sia_subsistema
+        self._aff_F = list(range(len(sub.indices_ncubos)))
+        self._aff_P = list(range(len(sub.dims_ncubos)))
+        self._aff_dim = [int(d) for d in sub.dims_ncubos]
+        self._aff_cubes = list(sub.ncubos)
+        s0 = {int(d): int(sub.estado_inicial[int(d)]) for d in sub.dims_ncubos}
+        self._aff_s0 = s0
+
+        def val(cube, est):
+            if cube.dims.size:
+                sel = tuple(est[int(j)] for j in cube.dims)
+                return 1.0 - float(cube.data[seleccionar_subestado(sel)])
+            return 1.0 - float(cube.data)
+
+        self._aff = {}
+        for fp in self._aff_F:
+            cube = self._aff_cubes[fp]
+            dims_cube = [int(x) for x in cube.dims]
+            base = val(cube, s0)
+            fila = {}
+            for mp in self._aff_P:
+                d = self._aff_dim[mp]
+                if d in dims_cube:
+                    flip = dict(s0)
+                    flip[d] = 1 - flip[d]
+                    fila[mp] = abs(base - val(cube, flip))
+                else:
+                    fila[mp] = 0.0
+            self._aff[fp] = fila
+
+        self._aff_iso = {
+            fp: abs(
+                float(self.sia_dists_marginales[fp])
+                - (1.0 - float(self._aff_cubes[fp].marginalizar(self._aff_cubes[fp].dims).data))
+            )
+            for fp in self._aff_F
+        }
+
+    def _aff_agrupar(self, F: List[int], k: int):
+        """Clustering aglomerativo (average linkage) de variables futuras según
+        el perfil de afinidad sobre las presentes. Devuelve ``k`` grupos."""
+        if k >= len(F):
+            return [[f] for f in F][:k]
+        perfil = {
+            f: np.array([self._aff[f][mp] for mp in self._aff_P], dtype=np.float64)
+            if self._aff_P
+            else np.zeros(1)
+            for f in F
+        }
+        clusters = [[f] for f in F]
+
+        def dist(a, b):
+            return float(
+                np.mean([np.linalg.norm(perfil[x] - perfil[y]) for x in a for y in b])
+            )
+
+        while len(clusters) > k:
+            bi, bj, bd = 0, 1, float("inf")
+            for i in range(len(clusters)):
+                for j in range(i + 1, len(clusters)):
+                    d = dist(clusters[i], clusters[j])
+                    if d < bd:
+                        bd, bi, bj = d, i, j
+            nuevo = clusters[bi] + clusters[bj]
+            clusters = [c for x, c in enumerate(clusters) if x not in (bi, bj)]
+            clusters.append(nuevo)
+        return clusters
+
+    def _aff_asignar_presentes(self, grupos: List[List[int]]):
+        """Asigna cada presente al grupo de futuras con mayor afinidad total."""
+        pm = [[] for _ in grupos]
+        for mp in self._aff_P:
+            best, ba = 0, -1.0
+            for g, fut in enumerate(grupos):
+                a = sum(self._aff[f][mp] for f in fut)
+                if a > ba or (a == ba and len(fut) > len(grupos[best])):
+                    ba, best = a, g
+            pm[best].append(mp)
+        return [list(grupos[g]) for g in range(len(grupos))], pm
+
+    def _candidatos_afinidad(
+        self, k: int
+    ) -> List[Tuple[List[List[int]], List[List[int]]]]:
+        """Genera candidatas de k partes por afinidad geométrica: aislamiento
+        (dos variantes), clustering aglomerativo y división recursiva."""
+        if not hasattr(self, "_aff"):
+            self._preparar_afinidad()
+        F = list(self._aff_F)
+        P = list(self._aff_P)
+        out: List[Tuple[List[List[int]], List[List[int]]]] = []
+        if not (2 <= k <= len(F)):
+            return out
+
+        # --- Aislamiento: las (k-1) futuras más baratas de aislar ---
+        orden = sorted(F, key=lambda f: self._aff_iso[f])
+        aislados = orden[: k - 1]
+        principal = [f for f in F if f not in aislados]
+        # Variante A: aisladas sin presentes; principal con TODAS las presentes.
+        out.append(([principal] + [[f] for f in aislados],
+                    [list(P)] + [[] for _ in aislados]))
+        # Variante B: cada aislada conserva su presente más afín.
+        if P:
+            tomadas: set = set()
+            mec_ais = []
+            for f in aislados:
+                d_best = max(P, key=lambda m: self._aff[f][m])
+                if self._aff[f][d_best] > 0 and d_best not in tomadas:
+                    mec_ais.append([d_best])
+                    tomadas.add(d_best)
+                else:
+                    mec_ais.append([])
+            pur = [principal] + [[f] for f in aislados]
+            mec = [[m for m in P if m not in tomadas]] + mec_ais
+            out.append((pur, mec))
+
+        # --- Clustering aglomerativo ---
+        g = self._aff_agrupar(F, k)
+        if g:
+            out.append(self._aff_asignar_presentes(g))
+
+        # --- División recursiva geométrica ---
+        grupos = [list(F)]
+        while len(grupos) < k:
+            idx, mejor = -1, -1.0
+            for i, gg in enumerate(grupos):
+                if len(gg) < 2:
+                    continue
+                sc = (
+                    sum(self._aff[a][m] for a in gg for m in P) if P else float(len(gg))
+                )
+                if sc > mejor:
+                    mejor, idx = sc, i
+            if idx == -1:
+                break
+            sub_g = self._aff_agrupar(grupos[idx], 2)
+            if not sub_g or len(sub_g) < 2:
+                break
+            grupos = grupos[:idx] + sub_g + grupos[idx + 1 :]
+        if len(grupos) == k:
+            out.append(self._aff_asignar_presentes(grupos))
+
+        return out
 
     @staticmethod
     def hamming(a: List[int], b: List[int]) -> int:

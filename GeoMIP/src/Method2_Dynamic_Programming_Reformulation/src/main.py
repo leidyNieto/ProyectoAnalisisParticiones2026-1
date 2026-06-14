@@ -9,6 +9,8 @@ from src.funcs.excel_pruebas2026 import (
     iter_hojas_pruebas,
     parsear_nombre_hoja,
 )
+from colorama import init as _color_init, Fore, Style
+_color_init()
 import multiprocessing
 import numpy as np
 import pandas as pd
@@ -20,11 +22,29 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 METHOD2_ROOT = Path(__file__).resolve().parents[1]
-GEOMIP_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
+#PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 LETRAS = "ABCDEFGHIJKLMNOPQRST"
-DEFAULT_EXCEL = GEOMIP_ROOT / "results" / "DatosPruebas2026_1.xlsx"
+#DEFAULT_EXCEL = PROJECT_ROOT / "results" / "DatosPruebas2026_1.xlsx"
 
+def _resolver_excel_entrada(nombre: str = "DatosPruebas2026_1.xlsx") -> Path:
+    """Localiza el Excel de pruebas admitiendo varias ubicaciones de 'results',
+    así da igual si la carpeta está en la raíz del repo o dentro de GeoMIP."""
+    candidatos = [
+        REPO_ROOT / "results" / nombre,            # results en la raíz del repo (ubicación actual)
+        METHOD2_ROOT.parent / "results" / nombre,  # GeoMIP/src/results (ubicación original)
+        METHOD2_ROOT / "results" / nombre,         # Method2.../results
+    ]
+    for candidato in candidatos:
+        if candidato.exists():
+            return candidato
+    return candidatos[0]  # por defecto, la raíz del repo
+ 
+ 
+# Se mantiene PROJECT_ROOT por compatibilidad con el resto del archivo.
+PROJECT_ROOT = REPO_ROOT
+DEFAULT_EXCEL = _resolver_excel_entrada()
 
 def convertir_a_binario(texto: str, n_bits: int) -> str:
     if texto is None or (isinstance(texto, float) and np.isnan(texto)):
@@ -48,7 +68,7 @@ def resolver_tpm_path(estado_inicio: str, pagina: str = "A") -> Path:
     bases = (
         METHOD2_ROOT / "src" / ".samples",
         METHOD2_ROOT / ".samples",
-        GEOMIP_ROOT / "data" / "samples",
+        PROJECT_ROOT / "data" / "samples",
     )
     for letra in candidatos_letra:
         sample_name = f"N{n}{letra}.csv"
@@ -196,7 +216,7 @@ def ejecutar_datos_pruebas2026(
 
         # Cargar TPM: genfromtxt puede lanzar MemoryError en archivos muy grandes (p.ej. N=25).
         try:
-            tpm = np.genfromtxt(tpm_path, delimiter=",")
+            tpm = np.genfromtxt(tpm_path, delimiter=",",dtype=np.float32)
         except MemoryError:
             print(f"\n=== TPM demasiado grande para cargar con numpy: {tpm_path} ===")
             print("Intentando fallback con pandas usando dtype=float32 (menos memoria). Si falla, use TPM menor o aumente RAM.")
@@ -246,23 +266,20 @@ def ejecutar_datos_pruebas2026(
                     resultado["k"],
                     resultado["perdida"],
                 )
-                print(
-                    f"  -> Mejor k={resultado['k']} perdida={resultado['perdida']:.4f} "
-                    f"tiempo={resultado['tiempo']:.3f}s"
-                )
-                # Mostrar la partición completa (igual que se escribe en el Excel)
-                if resultado.get("particion"):
-                    print(f"  -> Particion mejor (formato):\n{resultado.get('particion')}")
-                # Mostrar particiones y métricas por k
+                mejor_k = resultado["k"]
                 for k, r in sorted(resultado["por_k"].items()):
                     part_text = r.get("particion") or ""
                     perd = r.get("perdida")
                     tiempo = r.get("tiempo")
-                    print(
-                        f"     k={k}: particion={part_text} perdida={perd:.4f} tiempo={tiempo:.3f}s"
-                        if perd is not None and tiempo is not None
-                        else f"     k={k}: particion={part_text}"
-                    )
+                    marca = f"{Fore.GREEN}  \u25c0 MEJOR{Style.RESET_ALL}" if k == mejor_k else ""
+                    print(f"{Fore.GREEN}K={k}{Style.RESET_ALL}{marca}")
+                    if part_text:
+                        print(part_text)
+                    if perd is not None and tiempo is not None:
+                        print(f"{Fore.MAGENTA}\u03c6 = {perd:.7f}{Style.RESET_ALL}  tiempo = {tiempo:.4f}s")
+                    elif perd is not None:
+                        print(f"{Fore.MAGENTA}\u03c6 = {perd:.7f}{Style.RESET_ALL}")
+                    print()
                 resumen_filas.append({
                     "Hoja": nombre_hoja,
                     "Prueba": prueba.numero,
@@ -299,7 +316,7 @@ def iniciar():
     )
     if not ruta_entrada.exists():
         ruta_entrada = Path(
-            os.getenv("GEOMIP_INPUT_XLSX", str(GEOMIP_ROOT / "results" / "DatosPruebas2026_1.xlsx"))
+            os.getenv("GEOMIP_INPUT_XLSX", str(PROJECT_ROOT / "results" / "DatosPruebas2026_1.xlsx"))
         )
 
     ruta_salida = Path(
