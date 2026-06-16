@@ -34,6 +34,45 @@ class Manager:
     estado_inicial: str
     ruta_base: Path = Path(PATH_SAMPLES)
 
+    def __post_init__(self) -> None:
+        """
+        Resuelve la carpeta de muestras priorizando la COMPARTIDA con GeoMIP
+        (``GeoMIP/data/samples``), de modo que ambas estrategias analicen
+        exactamente las mismas TPMs y la comparación sea válida.
+
+        Orden de prioridad:
+          1. ``QNODES_SAMPLES_DIR`` (override explícito de QNodes).
+          2. ``GEOMIP_SAMPLES_DIR`` (override compartido: apunta ambos a la vez).
+          3. ``<PROJECT_ROOT>/GeoMIP/data/samples`` (fuente única compartida).
+          4. ``<QNODES_ROOT>/src/.samples`` y ``<QNODES_ROOT>/.samples`` (local).
+          5. ``<PROJECT_ROOT>/data/samples`` (respaldo).
+        """
+        for env_var in ("QNODES_SAMPLES_DIR", "GEOMIP_SAMPLES_DIR"):
+            env_dir = os.getenv(env_var)
+            if env_dir:
+                env_path = Path(env_dir).expanduser().resolve()
+                if env_path.exists():
+                    self.ruta_base = env_path
+                    return
+
+        qnodes_root = Path(__file__).resolve().parents[2]
+        project_root = Path(__file__).resolve().parents[3]
+        candidatos = (
+            project_root / "GeoMIP" / "data" / "samples",  # compartida con GeoMIP
+            qnodes_root / "src" / ".samples",
+            qnodes_root / ".samples",
+            project_root / "data" / "samples",
+        )
+
+        for candidato in candidatos:
+            if candidato.exists():
+                self.ruta_base = candidato
+                return
+
+        # Si nada existe aún, deja la ruta por defecto como absoluta (para que
+        # la generación de TPMs caiga en la fuente compartida de GeoMIP).
+        self.ruta_base = (project_root / "GeoMIP" / "data" / "samples").resolve()
+
     @property
     def pagina(self) -> str:
         return aplicacion.pagina_red_muestra
@@ -54,7 +93,7 @@ class Manager:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def cargar_red(self) -> np.ndarray:
-        dataset = np.genfromtxt(self.tpm_filename, delimiter=COLON_DELIM)
+        dataset = np.genfromtxt(self.tpm_filename, delimiter=COLON_DELIM, dtype="float32")
         return dataset
 
     def generar_red(

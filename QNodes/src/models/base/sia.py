@@ -187,6 +187,13 @@ class SIA(ABC):
             color_k = Fore.GREEN if es_mejor else Fore.WHITE
             marca = f"  {Fore.GREEN}◀ MEJOR{Style.RESET_ALL}" if es_mejor else ""
             print(f"{color_k}K={k}{marca}")
+            if res.get("inviable"):
+                print(
+                    f"{Fore.YELLOW}(no calculado: subsistema demasiado grande "
+                    f"para enumeración exhaustiva){Style.RESET_ALL}"
+                )
+                print()
+                continue
             if res["particion"] is not None:
                 fmt = fmt_geomip_k_particion(res["particion"])
                 for linea_fmt in fmt.splitlines():

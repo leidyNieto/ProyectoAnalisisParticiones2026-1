@@ -147,10 +147,15 @@ def escribir_resultado_fila(
     ws,
     fila: int,
     resultados_por_k: dict,
-    mejor_k: int | None,
-    mejor_perdida: float | None,
+    mejor_k: int | None = None,
+    mejor_perdida: float | None = None,
 ) -> None:
-    """Escribe columnas QNodes (k=2..5) y el mejor global en la fila de la prueba."""
+    """Escribe únicamente las columnas QNodes (k=2..5) en la fila de la prueba.
+
+    No toca las columnas Geometric (6,7,8 / 12,13,14 / ...) ni la zona de
+    'mejor global', de modo que QNodes y GeoMIP pueden escribir en el mismo
+    archivo sin pisarse.
+    """
     for k, (col_part, col_perd, col_time) in COLUMNAS_QNODES.items():
         r = resultados_por_k.get(k)
         if not r:
@@ -162,8 +167,3 @@ def escribir_resultado_fila(
         tiempo = r.get("tiempo")
         if tiempo is not None:
             ws.cell(row=fila + 1, column=col_time + 1, value=tiempo)
-
-    if mejor_k is not None:
-        ws.cell(row=fila + 1, column=COL_MEJOR_K + 1, value=f"MEJOR k={mejor_k}")
-        if mejor_perdida is not None:
-            ws.cell(row=fila + 1, column=COL_MEJOR_PERDIDA + 1, value=mejor_perdida)

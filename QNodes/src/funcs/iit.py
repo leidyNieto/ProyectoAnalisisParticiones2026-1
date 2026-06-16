@@ -16,6 +16,59 @@ from src.models.enums.distance import MetricDistance
 from src.models.enums.notation import Notation
 from src.models.enums.temporal_emd import TimeEMD
 
+# Tamaño máximo (en nodos del purview) para usar EMD-Hamming real (Wasserstein-1).
+# Por encima de este valor la distribución conjunta 2^N es inmanejable y se usa
+# la aproximación L1 marginal (igual que GeoMIP).
+HAMMING_EMD_MAX_N: int = 12
+
+# Caché de matrices de costo Hamming, indexada por número de estados (2^N).
+_HAMMING_CACHE: dict[int, np.ndarray] = {}
+
+
+def get_hamming_matrix(num_estados: int) -> np.ndarray:
+    """
+    Matriz de costos Hamming `num_estados x num_estados` donde
+    `costo[i, j] = popcount(i XOR j)` (bits diferentes entre los estados i y j).
+
+    Se construye una sola vez por tamaño y se cachea en `_HAMMING_CACHE`.
+    """
+    if num_estados not in _HAMMING_CACHE:
+        costs = np.empty((num_estados, num_estados), dtype=np.float64)
+        for i in range(num_estados):
+            costs[i, :i] = [count_bits(i ^ j) for j in range(i)]
+            costs[:i, i] = costs[i, :i]
+        np.fill_diagonal(costs, 0.0)
+        _HAMMING_CACHE[num_estados] = costs
+    return _HAMMING_CACHE[num_estados]
+
+
+def distribucion_conjunta_vectorizada(probabilidades: np.ndarray) -> np.ndarray:
+    """
+    Construye la distribución conjunta de 2^N estados a partir de un vector de
+    N probabilidades P(nodo = ON), asumiendo independencia entre nodos.
+
+    El resultado se ordena en little-endian (el bit 0 varía más rápido), igual
+    que la reconstrucción de GeoMIP.
+    """
+    p_on = np.asarray(probabilidades, dtype=np.float64)
+    p_off = 1.0 - p_on
+    factors = np.stack([p_off, p_on], axis=1)  # factors[i] = [P(OFF), P(ON)]
+    grid = np.meshgrid(*factors, indexing="ij")
+    return np.prod(grid, axis=0).flatten()
+
+
+def emd_hamming(u: NDArray[np.float64], v: NDArray[np.float64]) -> float:
+    """
+    EMD de Wasserstein-1 con métrica base Hamming entre dos distribuciones
+    conjuntas (de 2^N estados). Usa `pyemd` con la matriz de costos cacheada.
+    """
+    from pyemd import emd as _pyemd
+
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    mat = get_hamming_matrix(u.size)
+    return float(_pyemd(u, v, mat))
+
 
 # @cache
 def get_labels(n: int) -> tuple[str, ...]:
